@@ -17,8 +17,14 @@ def main():
     return
 
   # 2. Generate thesis benchmark verification tables (Tables 1 & 2)
-  stats = GoNoGoStats(df_windowed)
-  stats.export_benchmarks()
+  go_nogo_stats = GoNoGoStats(df_windowed)
+  go_nogo_stats.export_benchmarks()
+
+  # 3. Run the Repeated-Measures ANOVA and Post-Hoc Tests
+  go_nogo_stats.run_inferential_statistics()
+
+  # 4. Run the LME for Go-NOGO behavioral measures
+  go_nogo_stats.run_lme_model()
 
   print("\nPipeline execution completed successfully.")
 

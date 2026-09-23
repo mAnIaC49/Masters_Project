@@ -3,8 +3,12 @@ Generates behavioral summary statistics and benchmark verification tables
 """
 import pandas as pd
 import numpy as np
-from typing import Dict
+from typing import Dict, Tuple
 import os
+from scipy.stats import f_oneway, ttest_rel
+from statsmodels.stats.anova import AnovaRM
+from statsmodels.stats.multitest import multipletests
+import statsmodels.formula.api as smf
 
 from config import (
     MENTAL_STATES
@@ -63,15 +67,15 @@ class GoNoGoStats:
                 go_trials = subset[subset['go_nogo_sequence'] == 1]
                 nogo_trials = subset[subset['go_nogo_sequence'] != 1]
 
-                valid_go = go_trials[go_trials['response_made'] == 1]
+                valid_go = go_trials[go_trials['go_nogo_probe_accuracy'] == 1]
                 
                 go_mean = valid_go['RT_corrected'].mean()
                 go_std = valid_go['RT_corrected'].std()
                 cov_go = (go_std / go_mean) * 100
 
                 # This is a more concise way of calculating these errors
-                commission_errors = (nogo_trials['response_made'] == 1).mean() * 100 
-                omission_errors = (go_trials['response_made'] == 0).mean() * 100 
+                commission_errors = (nogo_trials['go_nogo_probe_accuracy'] == 1).mean() * 100 
+                omission_errors = (go_trials['go_nogo_probe_accuracy'] == 2).mean() * 100 
 
                 participant_rows.append({
                     'participant_id': pid,
@@ -99,7 +103,136 @@ class GoNoGoStats:
                 'Go Omission Error (%)': round(state_subset['Go Omission Error (%)'].mean(), 2)
             })
 
-        return pd.DataFrame(final_results)
+        return pd.DataFrame(final_results), p_results_df
+
+
+    def run_inferential_statistics(self) -> None:
+        """
+        Runs a Repeated-Measures ANOVA and pairwise paired t-tests with Cohen's d 
+        on complete-case participant-level mean reaction times.
+        """
+        from statsmodels.stats.multitest import multipletests
+        from statsmodels.stats.anova import AnovaRM
+        from scipy.stats import ttest_rel
+
+        # Get participant data 
+        _, p_results_df = self.calculate_behavioral_measures() 
+        
+        if p_results_df.empty:
+            print("[Warning] Participant results DataFrame is empty.")
+            return
+
+        # 1. Pivot to wide format to easily find participants with complete data
+        pivot_rt = p_results_df.pivot(index='participant_id', columns='Attentional State', values='Go Mean RT (ms)')
+        
+        # 2. Listwise Deletion: Keep only participants who experienced ALL THREE states
+        complete_cases = pivot_rt.dropna()
+        valid_participants = complete_cases.index
+
+        # 3. Filter the original long-format DataFrame to strictly these balanced participants
+        balanced_df = p_results_df[p_results_df['participant_id'].isin(valid_participants)].copy()
+
+        if balanced_df.empty or len(valid_participants) < 2:
+            print(f"[Warning] Not enough complete-case participants (N={len(valid_participants)}) to run ANOVA.")
+            return
+
+        print("\n================ REPEATED-MEASURES STATISTICAL REPLICATION ================")
+        print(f"Data balanced via listwise deletion. Running on N={len(valid_participants)} complete cases.\n")
+        
+        # 4. Repeated-Measures ANOVA
+        # Statsmodels parser crashes on spaces/parentheses. Temporarily rename columns.
+        anova_df = balanced_df.rename(columns={
+            'Attentional State': 'Attentional_State',
+            'Go Mean RT (ms)': 'Go_Mean_RT'
+        })
+
+        rm_anova = AnovaRM(
+            data=anova_df,
+            depvar='Go_Mean_RT',
+            subject='participant_id',
+            within=['Attentional_State']
+        ).fit()
+        print(rm_anova.summary())
+
+        # 5. Pairwise Paired t-tests & Effect Sizes (Holm-Bonferroni Corrected)
+        ot = complete_cases['On-Task (OT)']
+        mw = complete_cases['Mind Wandering (MW)']
+        mb = complete_cases['Mind Blanking (MB)']
+
+        def cohens_d_paired(x, y):
+            diff = x - y
+            return diff.mean() / diff.std(ddof=1)
+
+        comparisons = [
+            ("OT vs MB", ot, mb),
+            ("OT vs MW", ot, mw),
+            ("MW vs MB", mw, mb)
+        ]
+
+        raw_p_values = []
+        test_stats = []
+
+        for name_str, state_a, state_b in comparisons:
+            t_val, p_val = ttest_rel(state_a, state_b)
+            d_val = cohens_d_paired(state_a, state_b)
+            raw_p_values.append(p_val)
+            test_stats.append((name_str, t_val, d_val))
+            
+        # Apply Holm-Bonferroni correction
+        reject_flags, corrected_p_values, _, _ = multipletests(raw_p_values, alpha=0.05, method='holm')
+
+        print("\n--- Pairwise Comparisons (Holm-Bonferroni Corrected) ---")
+        for i, (name_str, t_val, d_val) in enumerate(test_stats):
+            sig_flag = "*" if reject_flags[i] else "ns"
+            print(f"Pairwise {name_str}: t = {t_val:.2f}, p_raw = {raw_p_values[i]:.5f}, p_corr = {corrected_p_values[i]:.5f} {sig_flag}, Cohen's d = {d_val:.2f}")
+            
+        print("===========================================================================\n")
+
+
+    def run_lme_model(self) -> None:
+        """
+        Runs a Linear Mixed-Effects (LME) model on Go trials to compare 
+        Reaction Times across mental states with random effects for participants.
+        """
+        # 1. Filter for Go trials with valid responses
+        go_trials = self.df[(self.df['go_nogo_sequence'] == 1) & (self.df['go_nogo_probe_accuracy'] == 1)].copy()
+        
+        if go_trials.empty:
+            print("[Warning] No valid Go trials found for LME model.")
+            return
+
+        # 2. Map the numeric mental states to their string labels to match the categorical design
+        go_trials['State'] = go_trials['mental_state'].map(MENTAL_STATES)
+        
+        # Drop any missing RTs or States
+        model_df = go_trials.dropna(subset=['RT_corrected', 'State', 'participant_id'])
+
+        print("\n================ LINEAR MIXED-EFFECTS (LME) MODEL ================")
+        print(f"Running LME on {len(model_df)} Go trials across {model_df['participant_id'].nunique()} participants.")
+        
+        # 3. Define the LME Formula
+        # Dependent: RT_corrected
+        # Fixed Effect: State (categorical, with 'On-Task (OT)' or 'Mind Wandering (MW)' as the baseline reference)
+        # Random Effect (Groups): participant_id
+        
+        # formula = "RT_corrected ~ C(State, Treatment(reference='On-Task (OT)'))"
+        formula = "RT_corrected ~ C(State, Treatment(reference='Mind Wandering (MW)'))"
+        
+        try:
+            # 4. Fit the model using statsmodels
+            lme_model = smf.mixedlm(
+                formula=formula,
+                data=model_df,
+                groups=model_df['participant_id']
+            )
+            lme_results = lme_model.fit()
+            print(lme_results.summary())
+            
+        except Exception as e:
+            print(f"[Error] Failed to fit LME model: {e}")
+            
+        print("==================================================================\n")
+
 
     def export_benchmarks(self, output_dir: str = "results") -> None:
         """
@@ -110,10 +243,11 @@ class GoNoGoStats:
         os.makedirs(output_dir, exist_ok=True)
         
         table1 = self.calculate_probe_distribution(self.df)
-        table2 = self.calculate_behavioral_measures()
+        table2_summary, table2_participants = self.calculate_behavioral_measures()
         
         # Export as CSVs for statistical software
         table1.to_csv(f"{output_dir}/table1_probe_distribution.csv")
-        table2.to_csv(f"{output_dir}/table2_behavioral_benchmarks.csv", index=False)
+        table2_summary.to_csv(f"{output_dir}/table2_behavioral_benchmarks.csv", index=False)
+        table2_participants.to_csv(f"{output_dir}/table2_participant_breakdown.csv", index=False)
 
         print(f"\n[Success] Benchmark CSVs exported to '{output_dir}/'.")

@@ -86,20 +86,17 @@ class GoNoGoLoader:
         # 1. Base display refresh latency adjustment (33 ms)
         df["RT_corrected"] = df["IP_DURATION"] - HARDWARE_LATENCY_MS
 
-        # 2. Remove 500 ms feedback screen on unresponded Go timeouts (>= 1500 ms)
+        # 2. Remove 500 ms feedback screen on unresponded Go trials
+        # Identify unresponded Go trials using the native task rules
+        is_go_trial = (df["go_nogo_sequence"] == 1)
+        is_timeout = (df["go_nogo_probe_accuracy"] == 2)
+
         df["RT_corrected"] = np.where(
-            df["IP_DURATION"] >= UNRESPONDED_THRESHOLD_MS,
+            is_go_trial & is_timeout,
             df["RT_corrected"] - FEEDBACK_SCREEN_MS,
             df["RT_corrected"],
         )
 
-        # 3. Create a new variable that stores information on whether the participant responded
-        df['response_made'] = np.where(
-            df['go_nogo_sequence'] == 1,
-            np.where(df['IP_DURATION'] < 1500, 1, 0),  # Go Trial Rule (Misses are ~1533 ms)
-            np.where(df['IP_DURATION'] < 1032, 1, 0)   # No-Go Trial Rule (Correct withholds are ~1032 ms)
-        )
-        
         return df
 
     @staticmethod
