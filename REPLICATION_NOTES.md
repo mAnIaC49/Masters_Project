@@ -30,3 +30,7 @@ How do we explain this difference in findings between the results we got from Re
 - RM ANOVA used participant level mean reaction-time while LME used trial level reaction time. Collapsing thousands of trials down to 10 participants × 3 means = 30 numbers essentially throws away most of your statistical power.
 
 LME's conclusion matches the visible pattern in our raw descriptive means. This along with higher statistical power supports LME's results over ANOVA's.
+
+
+### Reading Task
+- Divyansh has only done the centroid correction for the position values of the fixation. However, he has not used this to correct the word level metrics like TFTs and FFTs. He has also mentioned this in his README file.
