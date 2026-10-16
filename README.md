@@ -49,7 +49,14 @@ The pipeline expects your code directory (`My codes/`) and the raw experiment da
 
 ---
 
-## 3. Data Ingestion & Cohort Filtering (`loader.py`)
+## 3. Preprocessing (`preprocessing.py`)
+- The object created on instantiating the `EyeLinkPreprocessor` class contains the variables `input_dir` and `output_dir` which contain the path to the input and output directories, which it receives as inputs to the class. 
+- The `clean_fixation_report()` function removes the fixations less than 50 ms and greater than 1500 ms, and also the fixations less than 100 ms that  are adjacent to a saccade.
+- The `process_directory()` function iterates through the input files, cleans them, and then exports cleaned files.
+
+---
+
+## 4. Data Ingestion & Cohort Filtering (`loader.py`)
 - It first imports all the necessary constants from `config.py`.
 
 - It then defines a `GoNoGoLoader` class:
@@ -63,13 +70,14 @@ The pipeline expects your code directory (`My codes/`) and the raw experiment da
     - The object created on instantiating this class stores two pandas dataframes; `df_trials` containing rows fromthe trial reports of all participants after dropping practice trials and `processed_data`. It also contains the path to the csv file that contains information on the sentence/sentences in each trial stored as `reading_text_file`. It also contains a `excluded_participants` list of excluded participants which divyansh mentions as due to techical failuer.
     - The `load_reading_sentences()` function simply reads the reading text file and returns it.
     - The `calculate_y_drift_offsets()` function iterates through each trial, and first takes the list of all interest areas (words) and fixations for each trial. It then checks the highest and lowest points in the list of interest areas in the trial and calculates the center of it. It then checks the valid fixations in this context, which are those fixations that are one interest area height above the highest and below the lowest points in the list of interest areas (basically in the sentence), and then calculates the center of the highest and lowest points in the list of fixations amongst these. It then finds the difference between these two centers and saves it in a dictionary keyed by the trial index.
+    - The `apply_spatial_correction()` iterates through each unique trials in the fixation report of a participant, gets a list of all of all rows in the interest area reports and fixation reports for that trial, creates a new column containing the updated Y coordinate location in the fixation report list, and sort the fixations (to extract FFT). It then iterates through each of the interest areas from the list of interest area report associated with the trial, and then gets a new column of updated TFTs and FFTs based on what new fixations fall on this new list. It then returns the corrected iar.
     - The `load_trial_reports()` function drops practice trials from each participant's trial report and concatenates it into the `df_trials` dataframe.
     - The `extract_lexical_properties()` function takes in interest area report data, and for each word calculates the total number of characters and its frequency. It then standardises these values between -1 and 1.
-    - The `load_and_merge_reading_cohort()` function is where all the loading happens. It first does the y-axis drift calculation using the `calculate_y_drift_offsets()` function, and then for each participant's interest area dataframe, based on the trial number of each interest area, assigns the offset value in the trial into the dataframe. It then iterates through each probe trials in the trial dataframe, and then based on the window size assigns the previous trials with the attentional state label based on the participant's response. It then concatenates the interest area dataframe of each participant, uses the `extract_lexical_properties()` function on it, logs valid TFTs and FFTs into the dataframe and return it.
+    - The `load_and_merge_reading_cohort()` function is where all the loading happens. It first does the y-axis drift calculation using the `calculate_y_drift_offsets()` function, and then for each participant's interest area dataframe, based on the trial number of each interest area, assigns the offset value in the trial into the dataframe. It then uses the `apply_spatial_correction()` to calculate the new TFT and FFT. It then iterates through each probe trials in the trial dataframe, and then based on the window size assigns the previous trials with the attentional state label based on the participant's response. It then concatenates the interest area dataframe of each participant, uses the `extract_lexical_properties()` function on it, and then returns the outputted dataframe.
 
 ---
 
-## 4. Statistics (`stats.py`)
+## 5. Statistics (`stats.py`)
 - It defines a GoNoGoStats class which does statistical analysis on the data from the Go/No-Go task:
     - The class is instantiated by giving a segmented and cleaned `pandas Dataframe`.
     - It then defines a function `calculate_probe_distribution()` which calculates the proportions of different mental states as reported by the participants during the Go/No-Go task.
@@ -77,3 +85,11 @@ The pipeline expects your code directory (`My codes/`) and the raw experiment da
     - The `run_inferential_statistics()` function uses the participant-wise data for different mental states and does a repeated measures ANOVA (instead of the one-way ANOVA used by Divyansh) and then does a pairwise comparison (Holm-Bonferroni Corrected), and then prints the results.
     - The `run_lme_model()` function runs Linear Mixed Effects model on the data. You can use the reference of your choice.
     - The `export_benchmarks()` function uses the results of the statistics and then exports a csv file for the output of `calculate_probe_distribution()` and of `calculate_behavioral_measures()`.
+
+
+---
+
+## 6. Additional Programs
+These are programs that I have used for certain purposes and are not a part of the main pipeline.
+- `run_reading.py` runs the loader and stats for the reading task. Everytime I want to test the code for reading task analysis I didn't want to run the whole pipeline.
+- `verify_centroid_correction` calculates the the sum of total fixation time after centroid correction and compares it with the sum of total fixation time before centroid correction. This is done to verify that there is indeed an increase in TFT showing that centroid correction has improved the data. This was done on a 'loaded' data that hasn't undergone fixation filter because the values in 'TFT_CORRECTED' would otherwise exclude fixations which 'IA_DWELL_TIME', which is what 'TFT_CORRECTED' column is compared to, would include.

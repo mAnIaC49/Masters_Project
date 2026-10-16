@@ -3,6 +3,7 @@ Data ingestion, automated cohort variance filtering, latency corrections,
 and backward probe segmentation for the Go/No-Go task.
 """
 import glob
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 import numpy as np
@@ -14,6 +15,7 @@ from config import (
     PROJECT_ROOT,
     APPLY_Y_CENTROID_CORRECTION,
     GONOGO_TR_DIR,
+    CLEAN_GONOGO_FR_DIR,
     EYELINK_ENCODING,
     DELIMITER,
     HARDWARE_LATENCY_MS,
@@ -25,7 +27,7 @@ from config import (
     GONOGO_PROBE_WINDOW_SIZE,
     READING_TR_DIR,
     READING_IAR_DIR,
-    READING_FR_DIR,
+    CLEAN_READING_FR_DIR,
     READING_PRACTICE_TRIALS_DROP,
     READING_MAX_FIXATION_DURATION_MS
 )
@@ -209,9 +211,64 @@ class ReadingLoader:
 
         return y_offsets
 
+
+    def apply_spatial_correction(self, df_fr_p: pd.DataFrame, df_iar_p: pd.DataFrame) -> pd.DataFrame:
+        """
+        Applies the Y-offset to raw fixations, performs bounding-box hit testing, 
+        and recalculates true TFT and FFT.
+        """
+        iar_corrected = df_iar_p.copy()
+        
+        # Initialize baseline metrics
+        iar_corrected["TFT_CORRECTED"] = 0.0
+        iar_corrected["FFT_CORRECTED"] = np.nan
+        
+        for trial in df_fr_p["TRIAL_INDEX"].unique():
+            trial_fixations = df_fr_p[df_fr_p["TRIAL_INDEX"] == trial].copy()
+            trial_ias = iar_corrected[iar_corrected["TRIAL_INDEX"] == trial]
+            
+            if trial_fixations.empty or trial_ias.empty:
+                continue
+                
+            # Retrieve the Y_OFFSET calculated for this specific trial
+            y_offset = trial_ias["Y_OFFSET"].iloc[0] if "Y_OFFSET" in trial_ias.columns else 0.0
+            
+            fix_y_col = "CURRENT_FIX_Y" if "CURRENT_FIX_Y" in trial_fixations.columns else "EYE_GAZE_Y"
+            fix_x_col = "CURRENT_FIX_X" if "CURRENT_FIX_X" in trial_fixations.columns else "EYE_GAZE_X"
+            dur_col = "CURRENT_FIX_DURATION"
+            
+            if not all(col in trial_fixations.columns for col in [fix_y_col, fix_x_col, dur_col]):
+                continue
+                
+            # Coordinate Shifting: Apply the strict Y-axis offset to raw gaze coordinates
+            trial_fixations["SHIFTED_Y"] = trial_fixations[fix_y_col] + y_offset
+            
+            # Sort fixations chronologically to accurately capture the First Fixation Time
+            if "CURRENT_FIX_START" in trial_fixations.columns:
+                trial_fixations = trial_fixations.sort_values("CURRENT_FIX_START")
+            
+            # Spatial Hit-Testing
+            for ia_idx, ia_row in trial_ias.iterrows():
+                # Filter for fixations that land within this specific word's boundaries
+                hits = trial_fixations[
+                    (trial_fixations[fix_x_col] >= ia_row["IA_LEFT"]) &
+                    (trial_fixations[fix_x_col] <= ia_row["IA_RIGHT"]) &
+                    (trial_fixations["SHIFTED_Y"] >= ia_row["IA_TOP"]) &
+                    (trial_fixations["SHIFTED_Y"] <= ia_row["IA_BOTTOM"])
+                ]
+                
+                # Aggregation
+                if not hits.empty:
+                    # Sum all matching fixation durations for TFT
+                    iar_corrected.loc[ia_idx, "TFT_CORRECTED"] = hits[dur_col].sum()
+                    # Isolate the chronologically first fixation duration for FFT
+                    iar_corrected.loc[ia_idx, "FFT_CORRECTED"] = hits.iloc[0][dur_col]
+                    
+        return iar_corrected
+
     def load_trial_reports(self) -> pd.DataFrame:
         """Loads trial reports to capture mental state probes."""
-        tr_files = glob.glob(str(READING_TR_DIR / "*_tr.txt"))
+        tr_files = sorted(glob.glob(str(READING_TR_DIR / "*_tr.txt")), key=lambda f: int(re.match(r"(\d+)_tr\.txt", Path(f).name).group(1)))
         df_list = []
 
         for fpath in tr_files:
@@ -263,11 +320,11 @@ class ReadingLoader:
         return df
 
     def load_and_merge_reading_cohort(self, window_size: int = 4) -> pd.DataFrame:
-        """Executes full loading, offset calibration, backward propagation, and NLP extraction."""
+        """Executes full loading, offset calibration, spatial re-mapping, backward propagation, and NLP extraction."""
         if self.df_trials.empty:
             self.load_trial_reports()
 
-        iar_files = glob.glob(str(READING_IAR_DIR / "*_iar.txt"))
+        iar_files = sorted(glob.glob(str(READING_IAR_DIR / "*_iar.txt")), key=lambda f: int(Path(f).name.split("_")[0]))
         cohort_dfs = []
 
         for iar_path in iar_files:
@@ -285,7 +342,7 @@ class ReadingLoader:
                 df_iar_p["TRIAL_INDEX"] = df_iar_p["Trial_Index_"]
 
             if APPLY_Y_CENTROID_CORRECTION:
-                fr_path = READING_FR_DIR / f"{pid}_fr.txt"
+                fr_path = CLEAN_READING_FR_DIR / f"{pid}_fr.txt"
                 if fr_path.exists():
                     df_fr_p = pd.read_csv(fr_path, delimiter=DELIMITER, encoding=EYELINK_ENCODING, low_memory=False)
                     
@@ -295,13 +352,19 @@ class ReadingLoader:
                         
                     y_corrections = self.calculate_y_drift_offsets(df_fr_p, df_iar_p)
                     df_iar_p["Y_OFFSET"] = df_iar_p["TRIAL_INDEX"].map(y_corrections).fillna(0.0)
+                    
+                    # NEW: Apply the mathematical shift and recalculate true TFT/FFT
+                    df_iar_p = self.apply_spatial_correction(df_fr_p, df_iar_p)
                 else:
                     df_iar_p["Y_OFFSET"] = 0.0
+                    df_iar_p["TFT_CORRECTED"] = df_iar_p["IA_DWELL_TIME"]
+                    df_iar_p["FFT_CORRECTED"] = df_iar_p["IA_FIRST_FIXATION_DURATION"]
 
             p_tr = self.df_trials[self.df_trials["participant_id"] == pid].sort_values("TRIAL_INDEX")
             probe_trials = p_tr[p_tr["probe_accuracy"].isin(MENTAL_STATES.keys())]
 
             df_iar_p["Attentional_State"] = np.nan
+            df_iar_p["Attentional_State"] = df_iar_p["Attentional_State"].astype(object) # To  allow for strings as accepted datatype
             df_iar_p["Probe_Trial_ID"] = np.nan
 
             for _, probe_row in probe_trials.iterrows():
@@ -320,17 +383,6 @@ class ReadingLoader:
             return full_df
 
         full_df = self.extract_lexical_properties(full_df)
-
-        tft_col = "IA_DWELL_TIME" if "IA_DWELL_TIME" in full_df.columns else "TFT"
-        fft_col = "IA_FIRST_FIXATION_DURATION" if "IA_FIRST_FIXATION_DURATION" in full_df.columns else "FFT"
-
-        if tft_col in full_df.columns:
-            valid_mask = (full_df[tft_col] >= 50) & (full_df[tft_col] <= READING_MAX_FIXATION_DURATION_MS)
-            full_df = full_df[valid_mask].copy()
-            full_df["log_TFT"] = np.log(full_df[tft_col])
-            
-        if fft_col in full_df.columns:
-            full_df.loc[full_df[fft_col] > 0, "log_FFT"] = np.log(full_df[full_df[fft_col] > 0][fft_col])
 
         self.processed_data = full_df
         return self.processed_data

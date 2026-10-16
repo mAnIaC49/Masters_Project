@@ -9,8 +9,8 @@ def main():
   print("Starting Replication Pipeline...\n")
 
   # 1. Load, filter cohort, apply RT corrections, and segment probe windows
-  loader = GoNoGoLoader()
-  df_windowed = loader.run()
+  gonogoloader = GoNoGoLoader()
+  df_windowed = gonogoloader.run()
 
   if df_windowed.empty:
     print("Pipeline halted: No valid data processed.")
@@ -25,6 +25,7 @@ def main():
 
   # 4. Run the LME for Go-NOGO behavioral measures
   go_nogo_stats.run_lme_model()
+  
 
   print("\nPipeline execution completed successfully.")
 

@@ -33,4 +33,7 @@ LME's conclusion matches the visible pattern in our raw descriptive means. This 
 
 
 ### Reading Task
+#### Preprocessing
 - Divyansh has only done the centroid correction for the position values of the fixation. However, he has not used this to correct the word level metrics like TFTs and FFTs. He has also mentioned this in his README file.
+- Divyansh has applied a capping on TFT where it has to be between 50 to 1500 ms. But it makes more sense for the threshold to be put on individual fixations instead. I then realised that Eyelink 1000 plus manual has recommended removing fixations with durations less than 100 ms that occured before or after an eyeblink. Considering all of this, I decided to write a seperate python program `preprocessing.py` dedicated for preprocessing. Currently it preprocesses fixation reports. In the future, there might be a need to preprocess saccadic reports as well.
+- The `verify_centroid_correction` function showed a 17.23% increase in TFTs after y-centroid correction indicating that there was a reduction in the drift-related loss.

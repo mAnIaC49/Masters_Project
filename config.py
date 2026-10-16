@@ -25,11 +25,13 @@ if DATA_DIR is None:
 GONOGO_DIR = DATA_DIR / "gonogo"
 GONOGO_TR_DIR = GONOGO_DIR / "TR"
 GONOGO_FR_DIR = GONOGO_DIR / "FR"
+CLEAN_GONOGO_FR_DIR = DATA_DIR / "gonogo_clean" / "FR"
 GONOGO_IAR_DIR = GONOGO_DIR / "IAR"
 
 READING_DIR = DATA_DIR / "reading"
 READING_TR_DIR = READING_DIR / "trial_report"
 READING_FR_DIR = READING_DIR / "Fixation_report"
+CLEAN_READING_FR_DIR = DATA_DIR / "reading_clean" / "FR"
 READING_IAR_DIR = READING_DIR / "Interest_Area_Report"
 
 

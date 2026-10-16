@@ -1,0 +1,4 @@
+# Directories
+__pycache__/
+.vscode/
+reading_pipeline_exports/
